@@ -81,15 +81,16 @@ enabled = true
 # PROXY_TOKEN_TTL_SECONDS      Download-link lifetime, 60..21600. Default 1800.
 # RATE_LIMIT_RESOLVE_PER_MINUTE  Per IP, 1..10000. Default 20. Needs KV.
 #
-# LIVE — these are active. The header must stay uncommented for the keys below
-# it to be read as vars; bare keys under a commented header silently attach to
-# whatever table appeared last (that was [observability], which is why the
-# resolver looked unconfigured).
+# LIVE — active. The header must stay uncommented for the keys below it to be
+# read as vars; bare keys under a commented header silently attach to whatever
+# table appeared last. The build also parses RESOLVER_BASE_URL from here to add
+# the resolver's origin to the page's Content-Security-Policy, so a value that
+# is commented out disables the browser-direct download route too.
 [vars]
 RESOLVER_BASE_URL = "https://sectester.xyz/media-fetch_resolver"
 RESOLVER_BACKEND = "ytdlp"
 
-# Optional, uncomment as needed:
+# Optional:
 # ENVIRONMENT = "production"
 # PROXY_TOKEN_TTL_SECONDS = "1800"
 # RATE_LIMIT_RESOLVE_PER_MINUTE = "20"

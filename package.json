@@ -12,7 +12,7 @@
     "vendor:ffmpeg": "node scripts/vendor-ffmpeg.mjs",
     "upload:ffmpeg": "node scripts/upload-ffmpeg.mjs",
     "dev": "npm run build && concurrently -k -n vite,worker -c cyan,magenta \"vite\" \"wrangler dev\"",
-    "build": "vite build",
+    "build": "vite build && node scripts/build-headers.mjs",
     "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.client.json && tsc -p tsconfig.node.json",
     "deploy": "npm run build && wrangler deploy",
     "secrets": "wrangler secret put SIGNING_KEY",

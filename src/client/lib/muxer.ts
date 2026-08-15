@@ -236,12 +236,37 @@ async function fetchWithProgress(
   onProgress: (received: number, total: number | null) => void,
   signal?: AbortSignal,
 ): Promise<Uint8Array> {
-  const response = await fetch(url, { signal, credentials: 'same-origin' });
+  let response: Response;
+  try {
+    response = await fetch(url, { signal, credentials: 'same-origin' });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    /**
+     * A CSP refusal, a CORS refusal and a dropped connection are all the same
+     * opaque TypeError here — the browser deliberately withholds the reason.
+     * But the URL tells us whether a cross-origin policy could even be involved,
+     * and saying "try a different pair" when the pair is fine sends the user off
+     * to re-test tracks that were never the problem.
+     */
+    const isCrossOrigin = new URL(url, location.href).origin !== location.origin;
+    throw new MuxError(
+      isCrossOrigin
+        ? `The browser blocked the ${label} track from ${new URL(url).origin}. ` +
+          'The resolver must send CORS headers (set ALLOWED_ORIGIN on it) and its ' +
+          "origin must be allowed by this page's connect-src."
+        : `The ${label} track could not be reached. Check your connection and retry.`,
+      err,
+    );
+  }
+
   if (!response.ok) {
     throw new MuxError(
       response.status === 410
         ? 'The download link expired. Resolve the link again.'
-        : `Could not fetch the ${label} track (HTTP ${response.status}).`,
+        : response.status === 403
+          ? `The ${label} track was refused (403). If it came from the resolver, ` +
+            'check that RESOLVER_TOKEN matches on both sides.'
+          : `Could not fetch the ${label} track (HTTP ${response.status}).`,
     );
   }
   if (!response.body) throw new MuxError(`The ${label} track returned an empty response.`);
