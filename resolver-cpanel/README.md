@@ -70,6 +70,8 @@ Add these in the app's **Environment variables** section:
 | `MAX_CONCURRENT` | no | Default 2. Keep low — shared hosts suspend accounts for resource spikes |
 | `EXTRACT_TIMEOUT` | no | Default 45 seconds |
 | `YTDLP_COOKIE_FILE` | no | Absolute path to a cookies.txt. See the main README's "YouTube cookies" section, including the account-ban warning |
+| `ALLOWED_ORIGIN` | **yes, in practice** | Your Worker's origin, e.g. `https://media-fetch.zonal8731.workers.dev`. Without it the browser fetches bytes and then refuses to let the muxer read them. Defaults to `*`, which works but lets any site stream through your host |
+| `MAX_FETCH_MB` | no | Per-response ceiling, default 2048 |
 | `INSECURE_TLS` | no | **Last resort only.** Disables certificate verification |
 
 `/extract` refuses to run until `RESOLVER_TOKEN` is set, and `/health` says so in
@@ -103,7 +105,36 @@ curl https://resolver.yourdomain.com/health
 | `BLOCKED — bot check (datacenter IP)` | YouTube refuses this host. Dailymotion may still work. |
 | `TLS trust store broken` | See below — fixable, and nothing to do with blocking. |
 
-### 6. Point the Worker at it
+### 6. Why the resolver also serves the bytes
+
+Extraction alone is not enough, and the reason is worth understanding before you
+look at your bandwidth bill.
+
+A googlevideo URL contains `ip=<the extracting host's IP>`, and `ip` is listed in
+that URL's own `sparams`, so it is **covered by the signature**. Request it from
+any other address and you get a 302 followed by a 403 — the redirect even names
+the mismatch (`ipbypass=yes&mip=<caller>`). Cloudflare cannot fetch these URLs.
+Neither can the visitor's browser. Only this host can.
+
+Dailymotion's CDN is the same wall from the other side: it refuses datacenter IPs
+*and* sends no `Access-Control-Allow-Origin`, closing the browser route too.
+
+So `/fetch` streams the bytes from here, and the **browser talks to it directly** —
+the Worker never touches media, which keeps it inside Cloudflare's CPU limits and
+off the egress bill. It is locked down three ways: every URL is HMAC-signed by the
+Worker with `RESOLVER_TOKEN`, the signature carries an expiry, and this app
+enforces its own CDN host allowlist so even a leaked key cannot make it a general
+proxy.
+
+> **Bandwidth warning.** This moves real traffic through your hosting account —
+> a 1080p video is a few hundred MB. Shared hosts meter it and some suspend
+> accounts that sustain it. `MAX_FETCH_MB` caps one response; nothing here tracks
+> a monthly total, so watch your host's usage panel.
+
+Bilibili, Facebook and Instagram are extracted natively by the Worker and never
+touch this endpoint.
+
+### 7. Point the Worker at it
 
 In `wrangler.toml`:
 
@@ -113,7 +144,26 @@ RESOLVER_BASE_URL = "https://resolver.yourdomain.com"
 RESOLVER_BACKEND = "ytdlp"
 ```
 
-Then `npx wrangler secret put RESOLVER_TOKEN` with the same value, and redeploy.
+A path is fine — cPanel usually mounts apps on one — and it is preserved:
+`https://sectester.xyz/media-fetch_resolver` calls `.../media-fetch_resolver/extract`.
+
+Then `npx wrangler secret put RESOLVER_TOKEN` with the **same value** you set on
+the resolver, and redeploy.
+
+`RESOLVER_TOKEN` is doing two jobs now: it authenticates `/extract`, and it is the
+HMAC key for `/fetch`. If the two sides disagree, extraction returns 401 and every
+download 403s. If it is missing on the Worker, `/fetch` URLs are never minted and
+downloads fail with `ip_locked_url` — which says exactly that.
+
+Confirm with `curl https://<worker>/api/health`:
+
+```jsonc
+"resolverBaseUrl": "https://resolver.yourdomain.com",
+"resolverTokenSet": true,
+"resolverFallback": true
+```
+
+and on the resolver, `"fetchPassthrough": "enabled"`.
 
 ---
 

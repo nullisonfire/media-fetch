@@ -156,6 +156,12 @@ export const apiErrorSchema = z.object({
       'live_stream_unsupported',
       'rate_limited',
       'upstream_blocked',
+      /**
+       * The CDN URL is signed against a specific IP that is not ours. Distinct
+       * from upstream_blocked (intermittent, retryable) and token_expired
+       * (re-resolvable) because this one is neither — it needs a config change.
+       */
+      'ip_locked_url',
       'resolver_unavailable',
       'upstream_error',
       'token_invalid',

@@ -149,6 +149,24 @@ streamRoute.on(['GET', 'HEAD'], '/', async (c) => {
        * which cannot possibly help. On media bytes it usually IS an expired
        * upstream signature, where re-resolving is exactly the fix.
        */
+      /**
+       * A CDN URL that pins a specific `ip=` is bound to whichever machine
+       * extracted it. When that address is not ours, a 403 is guaranteed and
+       * permanent — retrying and re-resolving are both futile, so saying
+       * "expired" actively sends the user down a dead end. Detect it and say
+       * what is actually wrong.
+       */
+      const pinnedIp = new URL(upstreamUrl).searchParams.get('ip');
+      if (pinnedIp) {
+        throw new AppError(
+          'ip_locked_url',
+          `That link is cryptographically bound to the IP that extracted it (${pinnedIp}), ` +
+            'so this server cannot fetch it. Set RESOLVER_TOKEN on both the Worker and the ' +
+            'resolver to enable the resolver passthrough, which downloads from that same IP.',
+          502,
+        );
+      }
+
       if (kind === 'hls') {
         throw new AppError(
           'upstream_blocked',

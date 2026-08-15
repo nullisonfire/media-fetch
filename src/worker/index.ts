@@ -54,7 +54,17 @@ api.get('/health', (c) => {
       // binding is only an alternative delivery route.
       muxerCore: true,
       muxerCoreFromR2: Boolean(c.env.FFMPEG_BUCKET),
-      resolverFallback: Boolean(c.env.RESOLVER_BASE_URL?.includes('example.com') === false && c.env.RESOLVER_BASE_URL),
+      resolverFallback: Boolean(
+        c.env.RESOLVER_BASE_URL && !c.env.RESOLVER_BASE_URL.includes('example.'),
+      ),
+      /**
+       * Echoed verbatim so a misconfigured var is visible rather than inferred.
+       * Not a secret — the resolver's own token is what protects it — and
+       * without this, "I set the variable but nothing happened" has no answer
+       * short of guessing.
+       */
+      resolverBaseUrl: c.env.RESOLVER_BASE_URL ?? '(not set — check wrangler.toml [vars], then redeploy)',
+      resolverTokenSet: Boolean(c.env.RESOLVER_TOKEN),
       nativePlatforms: ['youtube', 'bilibili', 'facebook', 'instagram'],
     },
     },

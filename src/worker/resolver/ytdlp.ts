@@ -182,7 +182,13 @@ export function createYtDlpResolver(options: {
         .map(toRawStream)
         .filter((s): s is RawStream => s !== null)
         // De-duplicate identical URLs (yt-dlp sometimes lists a format twice).
-        .filter((s, i, all) => all.findIndex((o) => o.url === s.url) === i);
+        .filter((s, i, all) => all.findIndex((o) => o.url === s.url) === i)
+        /**
+         * Every URL here was signed by the CDN against the RESOLVER's IP, not
+         * ours. Marking them lets assemble() route the byte fetch back through
+         * the resolver — the only host whose address the signature accepts.
+         */
+        .map((s) => ({ ...s, viaResolver: true }));
 
       if (streams.length === 0) {
         throw AppError.upstream('No downloadable streams were found for that link.');

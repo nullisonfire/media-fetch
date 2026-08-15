@@ -1,6 +1,7 @@
 import type { ResolvedMedia, StreamVariant } from '@shared/contracts';
 import type { PlatformId } from '@shared/platforms';
 import { signStreamToken } from '../lib/signing';
+import { signPassthroughUrl, type PassthroughConfig } from './passthrough';
 import type { RawStream, ResolverResult } from './types';
 
 /**
@@ -104,9 +105,23 @@ export async function assembleResolvedMedia(params: {
   signingKey: string;
   ttlSeconds: number;
   origin: string;
+  /**
+   * Set when a resolver is configured WITH a token. Enables browser-direct byte
+   * fetches from the resolver for URLs the Worker's IP cannot use.
+   */
+  passthrough?: PassthroughConfig | undefined;
 }): Promise<ResolvedMedia> {
-  const { platform, canonicalUrl, mediaId, result, metadata, signingKey, ttlSeconds, origin } =
-    params;
+  const {
+    platform,
+    canonicalUrl,
+    mediaId,
+    result,
+    metadata,
+    signingKey,
+    ttlSeconds,
+    origin,
+    passthrough,
+  } = params;
 
   const expiresAtSeconds = Math.floor(Date.now() / 1000) + ttlSeconds;
   // Provider metadata wins over resolver metadata: it comes from the platform's
@@ -123,6 +138,8 @@ export async function assembleResolvedMedia(params: {
     // An HLS variant is assembled into MP4 in the browser, so name it that way.
     const container = stream.kind === 'hls' ? 'mp4' : stream.container;
 
+    const downloadFilename = safeFilename(title, suffix, container);
+
     const token = await signStreamToken(
       {
         u: stream.url,
@@ -131,10 +148,24 @@ export async function assembleResolvedMedia(params: {
         p: platform,
         ...(stream.headers?.['Referer'] ? { r: stream.headers['Referer'] } : {}),
         ...(stream.headers?.['User-Agent'] ? { ua: stream.headers['User-Agent'] } : {}),
-        f: safeFilename(title, suffix, container),
+        f: downloadFilename,
       },
       signingKey,
     );
+
+    /**
+     * Resolver-extracted URLs are pinned to the resolver's IP, so the Worker
+     * proxy above physically cannot fetch them. Hand the browser a passthrough
+     * URL on the resolver instead; proxyUrl stays as the signed fallback for
+     * everything extracted natively.
+     */
+    const passthroughUrl = await signPassthroughUrl({
+      stream,
+      platform,
+      expiresAtSeconds,
+      filename: downloadFilename,
+      passthrough,
+    });
 
     return {
       id: `${stream.kind}-${index}`,
@@ -153,7 +184,11 @@ export async function assembleResolvedMedia(params: {
       // Relative URL: keeps the payload small and avoids hardcoding the origin
       // into cached responses. `origin` is still accepted for absolute needs.
       proxyUrl: `${origin}/api/stream?t=${encodeURIComponent(token)}`,
-      ...(stream.directUrl ? { directUrl: stream.directUrl } : {}),
+      // Explicit directUrl (Dailymotion's master playlist) wins; otherwise the
+      // resolver passthrough, when this stream needs one.
+      ...(stream.directUrl ?? passthroughUrl
+        ? { directUrl: stream.directUrl ?? passthroughUrl! }
+        : {}),
     };
   };
 

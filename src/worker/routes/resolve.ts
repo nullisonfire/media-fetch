@@ -156,6 +156,12 @@ resolveRoute.post('/', async (c) => {
     signingKey: config.signingKey,
     ttlSeconds: config.proxyTokenTtlSeconds,
     origin: new URL(c.req.url).origin,
+    // Requires BOTH: a base URL to call and a token to sign with. Without the
+    // token the passthrough would be an unauthenticated open proxy, so it stays
+    // off rather than degrading.
+    ...(config.resolverBaseUrl && config.resolverToken
+      ? { passthrough: { baseUrl: config.resolverBaseUrl, token: config.resolverToken } }
+      : {}),
   });
 
   return jsonResponse({ ok: true, media });

@@ -66,22 +66,33 @@ enabled = true
 # id = "paste-the-id-here"
 # preview_id = "paste-the-preview-id-here"
 
-# --- Fallback extraction service ------------------------------------------
+# --- Optional settings ------------------------------------------------------
 #
-# Only needed for YouTube and Dailymotion, which block datacenter IPs. Bilibili,
-# Facebook and Instagram are extracted natively by the Worker and never touch it.
-# See resolver-server/ and the README section "YouTube cookies".
+# ONE [vars] table only. TOML forbids the same table twice, so uncomment the
+# header once and then whichever keys you need underneath it — two [vars] blocks
+# make `wrangler deploy` fail with a duplicate-table error.
 #
+# RESOLVER_BASE_URL   Fallback extraction service. Only YouTube and Dailymotion
+#                     use it; Bilibili, Facebook and Instagram never do. It may
+#                     include a path (cPanel mounts apps on one) — that is
+#                     preserved. See resolver-cpanel/ and resolver-server/.
+# RESOLVER_BACKEND    "ytdlp" (default) or "cobalt".
+# ENVIRONMENT         Label shown by /api/health.
+# PROXY_TOKEN_TTL_SECONDS      Download-link lifetime, 60..21600. Default 1800.
+# RATE_LIMIT_RESOLVE_PER_MINUTE  Per IP, 1..10000. Default 20. Needs KV.
+#
+# LIVE — these are active. The header must stay uncommented for the keys below
+# it to be read as vars; bare keys under a commented header silently attach to
+# whatever table appeared last (that was [observability], which is why the
+# resolver looked unconfigured).
 [vars]
 RESOLVER_BASE_URL = "https://sectester.xyz/media-fetch_resolver"
-RESOLVER_BACKEND = "ytdlp"          # or "cobalt"
+RESOLVER_BACKEND = "ytdlp"
 
-# --- Tuning (defaults in src/worker/config/env.ts) ------------------------
-#
-# [vars]
-# ENVIRONMENT = "production"              # label shown by /api/health
-# PROXY_TOKEN_TTL_SECONDS = "1800"        # download-link lifetime, 60..21600
-# RATE_LIMIT_RESOLVE_PER_MINUTE = "20"    # per IP, 1..10000; needs KV
+# Optional, uncomment as needed:
+# ENVIRONMENT = "production"
+# PROXY_TOKEN_TTL_SECONDS = "1800"
+# RATE_LIMIT_RESOLVE_PER_MINUTE = "20"
 
 # ---------------------------------------------------------------------------
 # SECRETS — never in this file. `wrangler secret put NAME`, or the dashboard
@@ -89,7 +100,12 @@ RESOLVER_BACKEND = "ytdlp"          # or "cobalt"
 # which cannot run the interactive command).
 #
 #   SIGNING_KEY      REQUIRED. 32+ random bytes: openssl rand -base64 48
-#   RESOLVER_TOKEN   optional. bearer token, only if you run a resolver
+#   RESOLVER_TOKEN   REQUIRED IF you run a resolver. Must match the resolver's
+#                    own RESOLVER_TOKEN. It both authenticates /extract and is
+#                    the HMAC key for /fetch, the endpoint that streams bytes
+#                    from the resolver's IP. YouTube and Dailymotion URLs are
+#                    signed against that IP, so without this they cannot be
+#                    downloaded at all (error: ip_locked_url).
 #   BILIBILI_COOKIE  optional. a SESSDATA value; lifts Bilibili's 480p
 #                    anonymous ceiling to 1080p+
 #   INSTAGRAM_COOKIE optional. unlocks gated posts and view counts

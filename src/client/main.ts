@@ -405,9 +405,15 @@ function renderVariantList(
         void handleHlsDownload(variant);
         return;
       }
-      // A real single file: hand it to the browser's download manager, which is
-      // resumable and uses no page memory.
-      downloadUrl(variant.proxyUrl);
+      /**
+       * A real single file: hand it to the browser's download manager, which is
+       * resumable and uses no page memory.
+       *
+       * directUrl wins when present. For resolver-extracted media it is not an
+       * optimisation but the only route that works — the CDN signature pins the
+       * resolver's IP, so the Worker proxy is guaranteed a 403.
+       */
+      downloadUrl(variant.directUrl ?? variant.proxyUrl);
       announce(`Started downloading ${variant.label}`);
     });
     row.append(button);
@@ -502,8 +508,10 @@ async function handleMux(): Promise<void> {
 
   try {
     const result = await muxTracks({
-      videoUrl: video.proxyUrl,
-      audioUrl: audio.proxyUrl,
+      // Same rule as the single-file path: an IP-pinned URL can only be read
+      // from the machine that minted it.
+      videoUrl: video.directUrl ?? video.proxyUrl,
+      audioUrl: audio.directUrl ?? audio.proxyUrl,
       videoCodec: video.codec,
       audioCodec: audio.codec,
       videoContainer: video.container,

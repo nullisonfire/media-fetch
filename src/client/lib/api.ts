@@ -98,6 +98,9 @@ export const ERROR_COPY: Record<ApiErrorCode, string> = {
   not_found: 'That media is private, deleted, or does not exist.',
   geo_restricted: 'That media is blocked in this region.',
   requires_auth: 'That media requires signing in, so it cannot be fetched.',
+  ip_locked_url:
+    'That download is locked to the extraction server. Set RESOLVER_TOKEN on both ' +
+    'the Worker and the resolver to enable the direct-from-resolver route.',
   live_stream_unsupported: 'Live streams cannot be saved as a file.',
   rate_limited: 'Too many requests. Give it a moment.',
   upstream_blocked:

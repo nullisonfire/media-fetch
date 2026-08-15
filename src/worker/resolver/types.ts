@@ -33,6 +33,22 @@ export interface RawStream {
    * succeeds and a datacenter IP does not.
    */
   directUrl?: string;
+
+  /**
+   * True when this URL was minted by the external resolver rather than by the
+   * Worker.
+   *
+   * This matters because of how CDNs bind their signatures. A googlevideo URL
+   * carries `ip=<the extractor's IP>` inside its signed `sparams`, so it returns
+   * 403 to every other address on earth — including this Worker and including
+   * the visitor's browser. Measured directly: the request 302s and comes back
+   * with `ipbypass=yes&mip=<caller>`, then 403.
+   *
+   * Resolver-derived bytes are therefore fetchable ONLY from the resolver's own
+   * IP. This flag tells assemble() to point the browser at the resolver's
+   * passthrough endpoint rather than at the Worker proxy, which cannot work.
+   */
+  viaResolver?: boolean;
 }
 
 export interface ResolverResult {

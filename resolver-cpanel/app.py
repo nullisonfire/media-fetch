@@ -27,11 +27,17 @@ request to /health answers it.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import ssl
 import threading
+import time
 import traceback
+import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Iterable
 
@@ -145,11 +151,18 @@ StartResponse = Callable[[str, list[tuple[str, str]]], Any]
 
 STATUS_TEXT = {
     200: "200 OK",
+    # 206 is not an edge case here: every ranged request — which is how a browser
+    # resumes a download, and how the client fetches segments in parallel — comes
+    # back as Partial Content. Omitting it produced the reason phrase "206 Error".
+    206: "206 Partial Content",
     400: "400 Bad Request",
     401: "401 Unauthorized",
+    403: "403 Forbidden",
     404: "404 Not Found",
     405: "405 Method Not Allowed",
+    410: "410 Gone",
     413: "413 Payload Too Large",
+    416: "416 Range Not Satisfiable",
     451: "451 Unavailable For Legal Reasons",
     500: "500 Internal Server Error",
     502: "502 Bad Gateway",
@@ -159,6 +172,19 @@ STATUS_TEXT = {
 
 #: 8 KB is far more than any URL needs and caps a trivial memory-abuse vector.
 MAX_BODY_BYTES = 8 * 1024
+
+
+def _query_param(environ: dict[str, Any], name: str) -> str:
+    """Reads a single query parameter, refusing repeats.
+
+    A repeated parameter is how request-smuggling tricks slip a second value
+    past a check that only looked at the first, so `?t=good&t=evil` is rejected
+    outright rather than resolved by precedence.
+    """
+    values = urllib.parse.parse_qs(environ.get("QUERY_STRING", "")).get(name, [])
+    if len(values) != 1:
+        raise HttpError(400, f"Expected exactly one '{name}' parameter")
+    return values[0]
 
 
 class HttpError(Exception):
@@ -171,12 +197,16 @@ class HttpError(Exception):
 
 
 def _json_response(
-    start_response: StartResponse, status: int, payload: dict[str, Any]
+    start_response: StartResponse,
+    status: int,
+    payload: dict[str, Any],
+    extra_headers: list[tuple[str, str]] | None = None,
 ) -> Iterable[bytes]:
     body = json.dumps(payload).encode("utf-8")
     start_response(
         STATUS_TEXT.get(status, f"{status} Error"),
-        [
+        (extra_headers or [])
+        + [
             ("Content-Type", "application/json; charset=utf-8"),
             ("Content-Length", str(len(body))),
             ("Cache-Control", "no-store"),
@@ -427,12 +457,239 @@ def handle_health() -> dict[str, Any]:
         ),
         "cookies": "cookiefile" in YDL_OPTIONS,
         "maxConcurrent": MAX_CONCURRENT,
+        # The passthrough is what makes YouTube and Dailymotion downloadable at
+        # all, and it silently does nothing without a token, so report it.
+        "fetchPassthrough": "enabled" if TOKEN else "DISABLED (needs RESOLVER_TOKEN)",
+        "allowedOrigin": ALLOWED_ORIGIN,
+        "allowedOriginWarning": (
+            "Set ALLOWED_ORIGIN to your Worker URL — '*' lets any site stream through this host"
+            if ALLOWED_ORIGIN == "*"
+            else None
+        ),
+        "maxFetchMb": MAX_FETCH_MB,
         "egressIp": egress,
         "youtubeSelfTest": youtube_status,
         "dailymotionMetadata": _probe(
             "https://geo.dailymotion.com/video/xaxvs5m.json?legacy=true"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# /fetch — byte passthrough
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS
+#
+# A googlevideo URL produced here embeds `ip=<this host's IP>`, and `ip` appears
+# in the URL's own `sparams` list, so it is covered by the signature. Fetching it
+# from any other address returns 403 — the request 302s and the redirect comes
+# back carrying `ipbypass=yes&mip=<caller>`. The Cloudflare Worker cannot use
+# these URLs. Neither can the visitor's browser. Only this machine can.
+#
+# Dailymotion is the same wall from the other side: its CDN refuses datacenter
+# IPs and sends no Access-Control-Allow-Origin, so the browser cannot read it
+# directly either.
+#
+# So the bytes have to leave from here. The browser streams from this endpoint
+# and muxes locally; the Worker never touches media, which keeps it inside
+# Cloudflare's CPU limits and keeps egress off the Cloudflare bill.
+#
+# COST WARNING: this moves real bandwidth through your hosting account. A 1080p
+# video is a few hundred MB. Shared hosts meter this and some suspend accounts
+# that sustain it. MAX_FETCH_MB caps a single response; there is no monthly
+# quota tracking here, so watch your host's usage panel.
+#
+# SECURITY
+#
+# An endpoint that fetches an arbitrary URL is an open proxy, so three locks:
+#   1. HMAC — the Worker signs every URL with RESOLVER_TOKEN. Same token format
+#      as src/worker/lib/signing.ts. Unsigned requests are refused.
+#   2. Expiry — inside the signed payload, so it cannot be edited.
+#   3. Host allowlist — enforced here, independently. Even a leaked signing key
+#      cannot point this at an internal address or an arbitrary third party.
+
+#: Only these CDNs. Suffix-matched on a dot boundary so "evil-googlevideo.com"
+#: does not match, and exact-matched so the apex works too.
+ALLOWED_FETCH_HOSTS = (
+    "googlevideo.com",
+    "dailymotion.com",
+    "dmcdn.net",
+    "bilivideo.com",
+    "fbcdn.net",
+    "cdninstagram.com",
+)
+
+#: Per-response ceiling. Guards against a signed URL being replayed to pull
+#: unbounded data through a metered connection.
+MAX_FETCH_MB = int(os.environ.get("MAX_FETCH_MB", "2048"))
+
+#: Browser origin allowed to read these bytes. MUST be set for the muxer to
+#: work: without a matching Access-Control-Allow-Origin the browser fetches the
+#: response and then refuses to let JavaScript see it.
+ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
+
+#: Streaming chunk. Large enough to keep syscall overhead low, small enough that
+#: a Passenger worker never holds much in memory.
+_CHUNK = 256 * 1024
+
+
+def _host_allowed(host: str) -> bool:
+    host = host.lower()
+    return any(host == h or host.endswith("." + h) for h in ALLOWED_FETCH_HOSTS)
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _verify_token(token: str) -> dict[str, Any]:
+    """
+    Verifies a Worker-minted token: base64url(json) "." base64url(HMAC-SHA256).
+
+    Mirrors src/worker/lib/signing.ts exactly. Order matters — the signature is
+    checked before the payload is parsed or trusted, and hmac.compare_digest
+    keeps the comparison constant-time.
+    """
+    if not TOKEN:
+        raise HttpError(503, "RESOLVER_TOKEN is not set; /fetch is disabled")
+
+    body, _, signature = token.partition(".")
+    if not body or not signature:
+        raise HttpError(400, "Malformed token")
+
+    expected = hmac.new(TOKEN.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
+    try:
+        provided = _b64url_decode(signature)
+    except Exception:
+        raise HttpError(403, "Bad token signature") from None
+    if not hmac.compare_digest(expected, provided):
+        raise HttpError(403, "Bad token signature")
+
+    try:
+        payload = json.loads(_b64url_decode(body))
+    except Exception:
+        raise HttpError(400, "Malformed token payload") from None
+
+    # Checked only after the signature, so this branch reveals nothing about the
+    # key to someone probing with forged tokens.
+    if not isinstance(payload.get("u"), str) or not isinstance(payload.get("e"), (int, float)):
+        raise HttpError(400, "Malformed token payload")
+    if payload["e"] <= time.time():
+        raise HttpError(410, "This download link expired. Resolve it again.")
+
+    return payload
+
+
+def _cors_headers() -> list[tuple[str, str]]:
+    return [
+        ("Access-Control-Allow-Origin", ALLOWED_ORIGIN),
+        # Range is what makes parallel and resumable downloads possible; without
+        # it in the allow-list the browser blocks the preflight.
+        ("Access-Control-Allow-Headers", "Range, Content-Type"),
+        ("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS"),
+        # JS cannot read a response header unless it is exposed. The muxer needs
+        # these to size its buffers and verify partial responses.
+        (
+            "Access-Control-Expose-Headers",
+            "Content-Length, Content-Range, Accept-Ranges, Content-Type",
+        ),
+        ("Access-Control-Max-Age", "600"),
+        # The app page is cross-origin isolated (COEP: require-corp) so it can
+        # use SharedArrayBuffer for ffmpeg.wasm. Under that policy a cross-origin
+        # subresource is blocked unless it opts in with this header.
+        ("Cross-Origin-Resource-Policy", "cross-origin"),
+    ]
+
+
+def handle_fetch(environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
+    payload = _verify_token(_query_param(environ, "t"))
+
+    target = payload["u"]
+    try:
+        host = urllib.parse.urlparse(target).hostname or ""
+    except Exception:
+        raise HttpError(400, "Malformed target URL") from None
+
+    if not _host_allowed(host):
+        raise HttpError(403, f"Host not allowed: {host}")
+
+    headers = {
+        # Replayed from the signed payload: googlevideo validates the UA against
+        # the InnerTube client that minted the URL and 403s on a mismatch.
+        "User-Agent": payload.get("ua") or "Mozilla/5.0",
+        "Accept": "*/*",
+    }
+    if payload.get("r"):
+        headers["Referer"] = payload["r"]
+
+    # Range comes from the browser, not the token, so it is passed through but
+    # never used to choose a destination.
+    client_range = environ.get("HTTP_RANGE")
+    if client_range:
+        headers["Range"] = client_range
+
+    request = urllib.request.Request(target, headers=headers, method="GET")
+
+    try:
+        upstream = urllib.request.urlopen(request, timeout=30, context=_ssl_context())
+    except urllib.error.HTTPError as exc:
+        detail = (
+            "The CDN refused this host."
+            if exc.code in (401, 403)
+            else f"Upstream returned {exc.code}."
+        )
+        raise HttpError(502 if exc.code not in (404, 410) else exc.code, detail) from None
+    except Exception as exc:
+        raise HttpError(504, f"Upstream fetch failed: {type(exc).__name__}") from None
+
+    status = upstream.status or 200
+    out: list[tuple[str, str]] = _cors_headers()
+    for name in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag"):
+        value = upstream.headers.get(name)
+        if value:
+            out.append((name, value))
+    out.append(("Cache-Control", "private, no-store"))
+    out.append(("X-Content-Type-Options", "nosniff"))
+
+    # ?dl=1 turns the response into a browser download. The name comes from the
+    # SIGNED payload, never the query string, so it cannot be used to inject
+    # header content. Non-ASCII is stripped for the plain filename and preserved
+    # in the RFC 5987 form that modern browsers prefer.
+    if environ.get("QUERY_STRING") and "dl=1" in environ["QUERY_STRING"]:
+        name = str(payload.get("f") or "download")
+        ascii_name = "".join(c for c in name if 32 <= ord(c) < 127).replace('"', "").replace("\\", "")
+        quoted = urllib.parse.quote(name, safe="")
+        out.append(
+            (
+                "Content-Disposition",
+                f'attachment; filename="{ascii_name or "download"}"; filename*=UTF-8\'\'{quoted}',
+            )
+        )
+
+    start_response(STATUS_TEXT.get(status, f"{status} OK"), out)
+
+    def stream() -> Iterable[bytes]:
+        """
+        Streams in chunks and closes the upstream connection no matter how the
+        client goes away. Passenger workers are long-lived and few, so a leaked
+        socket per aborted download would exhaust them quickly.
+        """
+        sent = 0
+        limit = MAX_FETCH_MB * 1024 * 1024
+        try:
+            while True:
+                chunk = upstream.read(_CHUNK)
+                if not chunk:
+                    break
+                sent += len(chunk)
+                if sent > limit:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+
+    return stream()
 
 
 # ---------------------------------------------------------------------------
@@ -455,10 +712,24 @@ def application(environ: dict[str, Any], start_response: StartResponse) -> Itera
                 raise HttpError(405, "Use POST for /extract")
             return _json_response(start_response, 200, handle_extract(environ))
 
+        if path == "/fetch":
+            # The browser preflights any request carrying a Range header.
+            if method == "OPTIONS":
+                start_response("200 OK", _cors_headers() + [("Content-Length", "0")])
+                return [b""]
+            if method not in ("GET", "HEAD"):
+                raise HttpError(405, "Use GET for /fetch")
+            # Streams its own response: the body can be gigabytes and must never
+            # be buffered into a Passenger worker's memory.
+            return handle_fetch(environ, start_response)
+
         raise HttpError(404, f"No route for {path}")
 
     except HttpError as exc:
-        return _json_response(start_response, exc.status, {"detail": exc.detail})
+        # Without CORS headers on the error too, a failing /fetch surfaces in the
+        # browser as an unexplained network error rather than the actual reason.
+        extra = _cors_headers() if path == "/fetch" else None
+        return _json_response(start_response, exc.status, {"detail": exc.detail}, extra)
 
     except Exception:  # noqa: BLE001
         # Log the trace to Passenger's stderr; return nothing revealing.
