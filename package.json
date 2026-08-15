@@ -1,0 +1,38 @@
+{
+  "name": "mediafetch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-platform media downloader on Cloudflare Workers with in-browser audio/video muxing.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "postinstall": "node scripts/vendor-ffmpeg.mjs",
+    "vendor:ffmpeg": "node scripts/vendor-ffmpeg.mjs",
+    "upload:ffmpeg": "node scripts/upload-ffmpeg.mjs",
+    "dev": "npm run build && concurrently -k -n vite,worker -c cyan,magenta \"vite\" \"wrangler dev\"",
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.client.json && tsc -p tsconfig.node.json",
+    "deploy": "npm run build && wrangler deploy",
+    "secrets": "wrangler secret put SIGNING_KEY",
+    "secrets:optional": "wrangler secret put RESOLVER_TOKEN && wrangler secret put BILIBILI_COOKIE && wrangler secret put INSTAGRAM_COOKIE",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260814.1",
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/core-mt": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "@types/node": "^22.10.5",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7",
+    "wrangler": "^4.123.0"
+  }
+}

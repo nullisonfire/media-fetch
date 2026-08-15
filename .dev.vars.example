@@ -1,0 +1,12 @@
+# Copy to `.dev.vars` for local `wrangler dev`. NEVER commit `.dev.vars`.
+#
+# Generate a signing key:
+#   openssl rand -base64 48
+SIGNING_KEY="replace-me-with-at-least-32-random-bytes"
+
+# Bearer token your resolver service expects.
+RESOLVER_TOKEN="replace-me"
+
+# Local resolver (see resolver-server/). Override the wrangler.toml value here.
+RESOLVER_BASE_URL="http://127.0.0.1:8080"
+RESOLVER_BACKEND="ytdlp"

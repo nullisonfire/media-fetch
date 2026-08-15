@@ -1,0 +1,96 @@
+#:schema node_modules/wrangler/config-schema.json
+#
+# MINIMAL BY DESIGN.
+#
+# Every setting with a sensible default now lives in src/worker/config/env.ts
+# instead of here, so this file only contains what actually has to be declared.
+# Nothing below is a placeholder you must edit to deploy.
+#
+# The one thing you MUST set is the SIGNING_KEY secret (see the bottom of this
+# file). Without it the Worker refuses to start, deliberately: that key is what
+# stops the stream proxy being an open relay for the whole internet.
+
+name = "media-fetch"   # must match the Worker name your CI expects
+main = "src/worker/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+
+# REQUIRED. Serves the built client. Anything that is not a static asset falls
+# through to the Worker (the /api/* routes).
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[observability]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# OPTIONAL EXTRAS — all commented out. Uncomment only what you want.
+#
+# Check what is live at any time with:  curl https://<worker>/api/health
+# ---------------------------------------------------------------------------
+
+# --- In-browser muxing: NOTHING TO CONFIGURE ------------------------------
+#
+# The muxer works out of the box. ffmpeg.wasm is ~31 MiB, over the 25 MiB
+# per-asset limit, so `npm run vendor:ffmpeg` (which postinstall runs) splits it
+# into 10 MiB parts under public/vendor/ffmpeg/ and the browser reassembles them.
+#
+# The R2 binding below is an OPTIONAL ALTERNATIVE for keeping the ~31 MiB out of
+# your asset bundle. Cloudflare already skips unchanged assets on redeploy, so
+# most deployments do not need it.
+#
+#   npx wrangler r2 bucket create mediafetch-vendor
+#   npm run upload:ffmpeg
+#
+# [[r2_buckets]]
+# binding = "FFMPEG_BUCKET"
+# bucket_name = "mediafetch-vendor"
+
+# --- Response cache + per-IP rate limiting ---------------------------------
+#
+#   npx wrangler kv namespace create CACHE
+#   npx wrangler kv namespace create CACHE --preview
+#
+# Paste BOTH returned ids below. A placeholder id does not degrade gracefully —
+# it fails the deploy outright with error 10042.
+#
+# Without this, every resolve re-extracts (slower, more upstream traffic) and the
+# rate limiter fails open.
+#
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "paste-the-id-here"
+# preview_id = "paste-the-preview-id-here"
+
+# --- Fallback extraction service ------------------------------------------
+#
+# Only needed for YouTube and Dailymotion, which block datacenter IPs. Bilibili,
+# Facebook and Instagram are extracted natively by the Worker and never touch it.
+# See resolver-server/ and the README section "YouTube cookies".
+#
+# [vars]
+# RESOLVER_BASE_URL = "https://your-resolver.example.net"
+# RESOLVER_BACKEND = "ytdlp"          # or "cobalt"
+
+# --- Tuning (defaults in src/worker/config/env.ts) ------------------------
+#
+# [vars]
+# ENVIRONMENT = "production"              # label shown by /api/health
+# PROXY_TOKEN_TTL_SECONDS = "1800"        # download-link lifetime, 60..21600
+# RATE_LIMIT_RESOLVE_PER_MINUTE = "20"    # per IP, 1..10000; needs KV
+
+# ---------------------------------------------------------------------------
+# SECRETS — never in this file. `wrangler secret put NAME`, or the dashboard
+# under Settings -> Variables and Secrets (required for Workers Builds CI,
+# which cannot run the interactive command).
+#
+#   SIGNING_KEY      REQUIRED. 32+ random bytes: openssl rand -base64 48
+#   RESOLVER_TOKEN   optional. bearer token, only if you run a resolver
+#   BILIBILI_COOKIE  optional. a SESSDATA value; lifts Bilibili's 480p
+#                    anonymous ceiling to 1080p+
+#   INSTAGRAM_COOKIE optional. unlocks gated posts and view counts
+# ---------------------------------------------------------------------------

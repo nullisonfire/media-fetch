@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    /* composite + tsBuildInfoFile: required for the project references in
+       tsconfig.json, and gives incremental typechecks. */
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.worker.tsbuildinfo",
+    /**
+     * Worker-side ONLY.
+     *
+     * The DOM lib is deliberately absent. @cloudflare/workers-types declares its
+     * own fetch/Request/Response/Headers globals, and loading DOM alongside them
+     * produces a wall of duplicate-identifier errors plus subtly wrong types
+     * (e.g. DOM's Response, which lacks Workers' streaming behaviour). Splitting
+     * the two tsconfigs is the supported fix.
+     */
+    "lib": ["ES2023"],
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/worker/**/*.ts", "src/shared/**/*.ts"]
+}

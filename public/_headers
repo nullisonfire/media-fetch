@@ -1,0 +1,28 @@
+# Cloudflare Workers Assets header rules.
+#
+# Cross-origin isolation is REQUIRED for SharedArrayBuffer, which the
+# multithreaded ffmpeg.wasm build uses for the audio/video mux. Without these two
+# headers the muxer silently falls back to single-threaded (3-5x slower) or fails
+# to start. Every ffmpeg asset is served same-origin from /vendor/ffmpeg/ for
+# exactly this reason.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=()
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; connect-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+
+# Content-hashed bundles are immutable.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# The ffmpeg core ships here as static assets. The 31 MiB wasm exceeds the 25 MiB
+# per-file limit, so the build splits it into 10 MiB parts that the browser
+# reassembles (src/client/lib/muxer.ts). Version-pinned by the vendor script, so
+# immutable. No R2 bucket required.
+/vendor/ffmpeg/*
+  Cache-Control: public, max-age=31536000, immutable
+  Cross-Origin-Resource-Policy: same-origin

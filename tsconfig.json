@@ -1,0 +1,26 @@
+{
+  /**
+   * Solution-style root config. There is no single global environment in this
+   * repo — the Worker runs on workerd and the UI runs in a browser — so each side
+   * gets its own project and `npm run typecheck` builds all three.
+   *
+   * compilerOptions.paths is duplicated here on purpose: Wrangler's esbuild reads
+   * the ROOT tsconfig to resolve path aliases, not the referenced project configs.
+   * Without it, `wrangler deploy` fails to resolve every `@shared/*` import even
+   * though `tsc` is perfectly happy. Keep in sync with tsconfig.base.json.
+   */
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"],
+      "@worker/*": ["src/worker/*"],
+      "@client/*": ["src/client/*"]
+    }
+  },
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.worker.json" },
+    { "path": "./tsconfig.client.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

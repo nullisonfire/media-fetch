@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>MediaFetch — download from any platform</title>
+    <meta
+      name="description"
+      content="Paste a link from YouTube, Bilibili, Facebook, Instagram or Dailymotion. Best-quality downloads with audio and video combined in your browser."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+
+  <body>
+    <!-- Screen-reader announcements for async state changes. -->
+    <div id="live-region" class="sr-only" role="status" aria-live="polite"></div>
+
+    <div class="aurora" aria-hidden="true">
+      <span class="aurora__blob aurora__blob--1"></span>
+      <span class="aurora__blob aurora__blob--2"></span>
+      <span class="aurora__blob aurora__blob--3"></span>
+    </div>
+
+    <header class="masthead">
+      <a class="brand" href="/">
+        <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="29" height="29" rx="9" class="brand__frame" />
+          <path d="M16 8v11m0 0-4.5-4.5M16 19l4.5-4.5" class="brand__arrow" />
+          <path d="M9.5 23h13" class="brand__base" />
+        </svg>
+        <span class="brand__text">Media<strong>Fetch</strong></span>
+      </a>
+
+      <p class="masthead__note">
+        <span class="dot" aria-hidden="true"></span>
+        Muxing runs in your browser — files never touch a server
+      </p>
+    </header>
+
+    <main class="shell">
+      <!-- ============ 1. Input ============ -->
+      <section class="hero" aria-labelledby="hero-title">
+        <h1 id="hero-title" class="hero__title">
+          Paste a link.<br /><span class="hero__accent">Get the best copy.</span>
+        </h1>
+        <p class="hero__sub">
+          Five platforms supported today, more behind a one-file plugin. When a platform splits
+          audio and video, we recombine them locally at full quality.
+        </p>
+
+        <form class="paste" id="paste-form" novalidate>
+          <div class="paste__field">
+            <svg class="paste__icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5m0 8a5 5 0 0 1-7.5-.5l-3 3a5 5 0 0 0 7 7L10 21"
+              />
+            </svg>
+            <input
+              id="url-input"
+              class="paste__input"
+              type="url"
+              inputmode="url"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="https://www.youtube.com/watch?v=…"
+              aria-describedby="detect-status"
+              required
+            />
+            <button
+              type="button"
+              id="clear-button"
+              class="paste__clear"
+              aria-label="Clear the link"
+              hidden
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </div>
+
+          <button type="submit" id="fetch-button" class="btn btn--primary paste__submit">
+            <span class="btn__label">Fetch</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+        </form>
+
+        <!-- Detection feedback + manual override -->
+        <div class="detect" id="detect-status">
+          <div class="detect__chip" id="detect-chip" hidden>
+            <span class="detect__glyph" id="detect-glyph" aria-hidden="true"></span>
+            <span class="detect__name" id="detect-name"></span>
+            <span class="detect__confidence" id="detect-confidence"></span>
+          </div>
+
+          <div class="detect__manual" id="detect-manual">
+            <label class="detect__label" for="platform-select" id="platform-label">
+              Platform
+            </label>
+            <div class="select">
+              <select id="platform-select" aria-describedby="platform-hint">
+                <option value="auto">Detect automatically</option>
+              </select>
+              <svg class="select__caret" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </div>
+            <p class="detect__hint" id="platform-hint">Supported link shapes appear here.</p>
+          </div>
+        </div>
+
+        <p class="alert" id="error-banner" role="alert" hidden></p>
+      </section>
+
+      <!-- ============ 2. Result ============ -->
+      <section class="result" id="result" aria-labelledby="result-title" hidden>
+        <div class="result__head">
+          <div class="result__thumb">
+            <img id="result-thumb" alt="" width="320" height="180" loading="lazy" />
+            <span class="result__duration" id="result-duration"></span>
+          </div>
+          <div class="result__meta">
+            <span class="badge" id="result-platform"></span>
+            <h2 class="result__title" id="result-title"></h2>
+            <p class="result__author" id="result-author"></p>
+          </div>
+        </div>
+
+        <!-- Mode switch -->
+        <div class="tabs" role="tablist" aria-label="Download mode">
+          <button class="tab" role="tab" id="tab-best" aria-controls="panel-best" aria-selected="true">
+            <strong>Best quality</strong>
+            <small>video + audio combined</small>
+          </button>
+          <button class="tab" role="tab" id="tab-single" aria-controls="panel-single" aria-selected="false">
+            <strong>Single file</strong>
+            <small>already has audio</small>
+          </button>
+          <button class="tab" role="tab" id="tab-audio" aria-controls="panel-audio" aria-selected="false">
+            <strong>Audio only</strong>
+            <small>music &amp; podcasts</small>
+          </button>
+        </div>
+
+        <!-- Panel: best quality (mux) -->
+        <div class="panel" id="panel-best" role="tabpanel" aria-labelledby="tab-best" tabindex="0">
+          <p class="panel__lede" id="mux-lede"></p>
+
+          <div class="pair">
+            <div class="pair__side">
+              <label class="field__label" for="video-select">Video track</label>
+              <div class="select select--block">
+                <select id="video-select"></select>
+                <svg class="select__caret" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
+            </div>
+            <div class="pair__plus" aria-hidden="true">+</div>
+            <div class="pair__side">
+              <label class="field__label" for="audio-select">Audio track</label>
+              <div class="select select--block">
+                <select id="audio-select"></select>
+                <svg class="select__caret" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary" id="mux-summary"></div>
+
+          <button type="button" id="mux-button" class="btn btn--primary btn--xl btn--block">
+            <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 20h16" />
+            </svg>
+            <span class="btn__label">Combine &amp; download</span>
+          </button>
+
+          <p class="panel__note" id="mux-support-note"></p>
+        </div>
+
+        <!-- Panel: single progressive file -->
+        <div class="panel" id="panel-single" role="tabpanel" aria-labelledby="tab-single" tabindex="0" hidden>
+          <p class="panel__lede">
+            One file, audio already included. Fastest route — the browser downloads it directly with
+            no processing.
+          </p>
+          <ul class="variants" id="muxed-list"></ul>
+        </div>
+
+        <!-- Panel: audio only -->
+        <div class="panel" id="panel-audio" role="tabpanel" aria-labelledby="tab-audio" tabindex="0" hidden>
+          <p class="panel__lede">Audio tracks, straight from the source with no re-encoding.</p>
+          <ul class="variants" id="audio-list"></ul>
+        </div>
+      </section>
+
+      <!-- ============ 3. Progress ============ -->
+      <section class="progress" id="progress" aria-labelledby="progress-title" hidden>
+        <div class="progress__head">
+          <h3 class="progress__title" id="progress-title">Working…</h3>
+          <button type="button" id="cancel-button" class="btn btn--ghost btn--sm">Cancel</button>
+        </div>
+        <div
+          class="progress__track"
+          role="progressbar"
+          id="progress-bar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+        >
+          <div class="progress__fill" id="progress-fill"></div>
+        </div>
+        <div class="progress__meta">
+          <span id="progress-message">Starting…</span>
+          <span class="mono" id="progress-detail"></span>
+        </div>
+        <ol class="steps" id="progress-steps">
+          <li data-phase="download">Download tracks</li>
+          <li data-phase="mux">Combine</li>
+          <li data-phase="finalize">Save</li>
+        </ol>
+      </section>
+
+      <!-- ============ 4. Empty-state guidance ============ -->
+      <section class="platforms" id="platform-gallery" aria-labelledby="platforms-title">
+        <h2 class="platforms__title" id="platforms-title">Supported platforms</h2>
+        <ul class="platforms__grid" id="platforms-grid"></ul>
+        <p class="platforms__more">
+          Adding another platform is one file in <code>src/worker/platforms/</code> plus one registry
+          line. Detection, this list and the dropdown all update themselves.
+        </p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>
+        Only download media you own or have the right to save. Respect each platform's terms and the
+        rights of creators.
+      </p>
+    </footer>
+
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
