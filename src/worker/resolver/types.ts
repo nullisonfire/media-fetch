@@ -69,3 +69,18 @@ export interface ResolverBackend {
   readonly name: string;
   resolve(input: ResolverInput): Promise<ResolverResult>;
 }
+
+
+/**
+ * Joins a path onto a resolver base URL, PRESERVING any path the base carries.
+ *
+ * `new URL('/extract', 'https://host/app')` yields `https://host/extract` — the
+ * leading slash makes it root-absolute and silently discards `/app`. That breaks
+ * every resolver mounted on a subpath (cPanel's "Setup Python App" mounts at a
+ * path by default), and it fails as a confusing 404 from the wrong URL.
+ */
+export function joinResolverUrl(baseUrl: string, path: string): string {
+  const base = baseUrl.replace(/\/+$/, '');
+  const suffix = path.replace(/^\/+/, '');
+  return suffix ? `${base}/${suffix}` : base;
+}

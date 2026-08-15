@@ -1,5 +1,5 @@
 import { AppError } from '../lib/http';
-import type { RawStream, ResolverBackend, ResolverResult } from './types';
+import { joinResolverUrl, type RawStream, type ResolverBackend, type ResolverResult } from './types';
 
 /**
  * Adapter for a self-hosted yt-dlp HTTP service.
@@ -136,7 +136,7 @@ export function createYtDlpResolver(options: {
     name: 'ytdlp',
 
     async resolve({ url }): Promise<ResolverResult> {
-      const endpoint = new URL('/extract', baseUrl).toString();
+      const endpoint = joinResolverUrl(baseUrl, 'extract');
 
       let response: Response;
       try {

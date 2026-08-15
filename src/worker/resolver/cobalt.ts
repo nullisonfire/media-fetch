@@ -1,5 +1,5 @@
 import { AppError } from '../lib/http';
-import type { RawStream, ResolverBackend, ResolverResult } from './types';
+import { joinResolverUrl, type RawStream, type ResolverBackend, type ResolverResult } from './types';
 
 /**
  * Adapter for a self-hosted Cobalt instance (API v10).
@@ -56,7 +56,7 @@ export function createCobaltResolver(options: {
 
   async function call(url: string, downloadMode: 'auto' | 'audio'): Promise<CobaltResponse> {
     try {
-      const res = await fetch(new URL('/', baseUrl).toString(), {
+      const res = await fetch(joinResolverUrl(baseUrl, ''), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
