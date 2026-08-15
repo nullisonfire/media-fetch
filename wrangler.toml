@@ -73,8 +73,8 @@ enabled = true
 # See resolver-server/ and the README section "YouTube cookies".
 #
 # [vars]
-# RESOLVER_BASE_URL = "https://your-resolver.example.net"
-# RESOLVER_BACKEND = "ytdlp"          # or "cobalt"
+RESOLVER_BASE_URL = "https://sectester.xyz/media-fetch_resolver"
+RESOLVER_BACKEND = "ytdlp"          # or "cobalt"
 
 # --- Tuning (defaults in src/worker/config/env.ts) ------------------------
 #
