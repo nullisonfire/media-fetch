@@ -298,7 +298,9 @@ function renderResult(media: ResolvedMedia): void {
 
   const videos = media.variants.filter((v) => v.kind === 'video');
   const audios = media.variants.filter((v) => v.kind === 'audio');
-  const muxed = media.variants.filter((v) => v.kind === 'muxed');
+  // HLS variants already contain audio, so they belong with the progressive
+  // files rather than in the combine tab — there is nothing to combine them with.
+  const muxed = media.variants.filter((v) => v.kind === 'muxed' || v.kind === 'hls');
 
   const canMux = videos.length > 0 && audios.length > 0;
 
@@ -396,10 +398,15 @@ function renderVariantList(
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'btn btn--ghost btn--sm';
-    button.textContent = 'Download';
+    button.textContent = variant.kind === 'hls' ? 'Build & save' : 'Download';
     button.addEventListener('click', () => {
-      // Direct single-file download: hand it to the browser's download manager,
-      // which is resumable and uses no page memory.
+      if (variant.kind === 'hls') {
+        // HLS is a playlist, not a file: it must be assembled in the browser.
+        void handleHlsDownload(variant);
+        return;
+      }
+      // A real single file: hand it to the browser's download manager, which is
+      // resumable and uses no page memory.
       downloadUrl(variant.proxyUrl);
       announce(`Started downloading ${variant.label}`);
     });
@@ -524,6 +531,77 @@ async function handleMux(): Promise<void> {
     showError(err instanceof MuxError ? err.message : 'Combining the tracks failed. Try a different pair.');
   } finally {
     setBusy(false, ui.muxButton);
+    state.controller = null;
+  }
+}
+
+/**
+ * Downloads an HLS variant: fetch every segment through the proxy, join them,
+ * then one `-c copy` pass to produce a seekable MP4.
+ *
+ * Kept separate from handleMux() because nothing is being combined here — the
+ * variant already carries audio. This is assembly, not muxing.
+ */
+async function handleHlsDownload(variant: StreamVariant): Promise<void> {
+  const media = state.media;
+  if (!media || state.busy) return;
+
+  clearError();
+  state.busy = true;
+  ui.fetchButton.disabled = true;
+  showProgress(true);
+  state.controller = new AbortController();
+
+  const filename =
+    media.title.replace(/[<>:"'/\\|?*]/g, '').slice(0, 100) || 'download';
+
+  try {
+    // Both modules carry their own Error subclasses, but the catch below only
+    // needs the message, so they are not imported.
+    const [{ downloadHlsVariant }, { remuxToMp4 }] = await Promise.all([
+      import('./lib/hls'),
+      import('./lib/muxer'),
+    ]);
+
+    announce('Downloading segments…');
+    const data = await downloadHlsVariant(
+      variant.proxyUrl,
+      ({ completed, total, bytes }) =>
+        renderProgress({
+          phase: 'download',
+          ratio: total ? completed / total : null,
+          message: `Downloading segments (${completed} of ${total})…`,
+          bytesProcessed: bytes,
+        }),
+      state.controller.signal,
+    );
+
+    // An fMP4 stream starts with an ftyp/styp box; MPEG-TS starts with 0x47.
+    const isFragmentedMp4 =
+      data.length > 8 && String.fromCharCode(data[4]!, data[5]!, data[6]!, data[7]!).match(/typ$/);
+
+    const result = await remuxToMp4({
+      data,
+      sourceContainer: isFragmentedMp4 ? 'mp4' : 'ts',
+      filename,
+      onProgress: renderProgress,
+    });
+
+    announce('Finished. Choose where to save the file.');
+    await saveBlob(result.blob, result.filename);
+    announce(`Saved ${result.filename}`);
+    showProgress(false);
+  } catch (err) {
+    showProgress(false);
+    if (err instanceof SaveCancelled) return;
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      announce('Cancelled.');
+      return;
+    }
+    showError(err instanceof Error ? err.message : 'Could not build that download.');
+  } finally {
+    state.busy = false;
+    ui.fetchButton.disabled = false;
     state.controller = null;
   }
 }

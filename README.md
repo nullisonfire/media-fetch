@@ -33,11 +33,24 @@ Because we only ever **stream copy** (`-c copy`) — rewriting container headers
 | **Instagram** | ✅ yes | Logged-out Polaris GraphQL. Needs `Sec-Fetch-Site: same-origin`, which **only a Worker can send** |
 | **Facebook** | ✅ yes | `/plugins/video.php` returns `hd_src`/`sd_src` with no cookies |
 | **YouTube** | ⚠️ needs residential egress | InnerTube ANDROID_VR needs no JS and no PO token, but datacenter IPs get "confirm you're not a bot" |
-| **Dailymotion** | ❌ resolver only | Metadata resolves fine; its CDN returns 403 to datacenter IPs regardless of headers |
+| **Dailymotion** | ✅ yes | `geo.dailymotion.com` metadata + HLS. Segments are fetched and joined in the browser |
 
-**Measured, not assumed.** From a datacenter IP: Bilibili returned 6 video + 3 audio DASH reps and served HTTP 206 bytes. YouTube's InnerTube ANDROID_VR client returned 27 formats, all with direct URLs and **zero** requiring JS signature descrambling — but only 1 of 9 test videos passed the bot check. Browser-side extraction is not an escape hatch either: InnerTube answers 403 with no CORS headers, and googlevideo sends no `Access-Control-Allow-Origin`, so a browser cannot read those bytes into JS for muxing.
+**Measured, not assumed.** Bilibili returns 6 video + 3 audio DASH reps and serves HTTP 206 bytes. Dailymotion resolves 3/3 test videos up to 1080p. YouTube's InnerTube ANDROID_VR client returns 27 formats, all with direct URLs and **zero** requiring JS signature descrambling — but only 1 of 9 test videos passed the bot check.
 
-So a Cloudflare-only deployment covers **Bilibili, Facebook and Instagram** completely. YouTube and Dailymotion need a resolver with a residential IP — a Raspberry Pi or an old phone on home wifi is sufficient and is the cheapest reliable option.
+### The workerd fingerprint surprise
+
+`cdndirector.dailymotion.com` refuses Node and curl with a bare `403` (empty body,
+`server: cloudflare` — a WAF block), from the same host and the same IP where the
+Worker succeeds. Ruled out by direct test: it is not the headers (a byte-exact copy
+of a real Chrome request is still refused) and not cookies (a bootstrapped guest jar
+changes nothing).
+
+**workerd's own TLS/HTTP2 fingerprint is what gets through.** The practical lesson:
+never conclude a host is blocked based on curl or Node — measure from inside a
+Worker, which is what `scripts/edge-probe.js` is for.
+
+So a Cloudflare-only deployment covers **Bilibili, Facebook, Instagram and
+Dailymotion**. Only YouTube needs a resolver on a residential IP.
 
 ---
 
@@ -63,6 +76,11 @@ paste URL ──POST /api/detect──▶ platform registry
                              ◀── streamed bytes (never buffered)
 
 ffmpeg.wasm: video + audio ──▶ single file ──▶ File System Access API ──▶ disk
+
+HLS path (Dailymotion), where each variant already carries audio:
+  GET /api/stream?t=… (kind=hls) ──▶ fetch playlist, REWRITE every segment URI
+                                     into a signed same-origin proxy URL
+  browser ── fetch ~N segments in parallel ──▶ join ──▶ ffmpeg -c copy ──▶ MP4
 ```
 
 ### Layout

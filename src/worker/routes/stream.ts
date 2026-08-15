@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { loadConfig, UPSTREAM_USER_AGENT, type Env } from '../config/env';
 import { AppError } from '../lib/http';
 import { verifyStreamToken } from '../lib/signing';
+import { rewritePlaylist } from '../lib/hls';
 import { safeFetch } from '../lib/ssrf';
 
 export const streamRoute = new Hono<{ Bindings: Env }>();
@@ -108,6 +109,38 @@ streamRoute.on(['GET', 'HEAD'], '/', async (c) => {
     }
     if (upstream.status === 404) throw AppError.notFound('The media is no longer available.');
     throw AppError.upstream(`The platform returned ${upstream.status}.`);
+  }
+
+  /**
+   * An HLS playlist is text full of CDN URLs, not media. Rewrite every URI to a
+   * signed same-origin proxy URL before the browser sees it: the segment hosts
+   * send no CORS headers, so JS could not fetch them directly, and the raw URLs
+   * would leak upstream signatures into the page.
+   */
+  if (kind === 'hls') {
+    const body = await upstream.text();
+    const rewritten = await rewritePlaylist(body, {
+      playlistUrl: upstreamUrl,
+      origin: new URL(c.req.url).origin,
+      signingKey: config.signingKey,
+      // Children inherit the parent's expiry, so nothing outlives its token.
+      expiresAt: verified.payload.e,
+      base: {
+        p: verified.payload.p,
+        ...(referer ? { r: referer } : {}),
+        ...(ua ? { ua } : {}),
+      },
+    });
+
+    return new Response(rewritten, {
+      status: 200,
+      headers: {
+        'content-type': 'application/vnd.apple.mpegurl',
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+        'cross-origin-resource-policy': 'same-origin',
+      },
+    });
   }
 
   const headers = new Headers();

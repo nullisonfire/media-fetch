@@ -15,10 +15,13 @@ export const platformIdSchema = z.enum(PLATFORM_IDS);
 
 /**
  * `muxed` = progressive file that already contains both tracks.
- * `video` / `audio` = adaptive, single-track — these are the ones that need the
- * in-browser muxer to be recombined at full quality.
+ * `video` / `audio` = adaptive, single-track — these need the in-browser muxer
+ *   to be recombined at full quality.
+ * `hls`   = an HLS variant playlist. Already contains both tracks, but arrives as
+ *   hundreds of segments that the browser must fetch and concatenate before
+ *   remuxing into a single file. Dailymotion serves only this shape.
  */
-export const trackKindSchema = z.enum(['muxed', 'video', 'audio']);
+export const trackKindSchema = z.enum(['muxed', 'video', 'audio', 'hls']);
 export type TrackKind = z.infer<typeof trackKindSchema>;
 
 export const streamVariantSchema = z.object({

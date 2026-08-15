@@ -56,6 +56,7 @@ function buildLabel(stream: RawStream): string {
     if (stream.hdr) parts.push('HDR');
     parts.push(prettyCodec(stream.codec));
     if (stream.kind === 'muxed') parts.push('with audio');
+    if (stream.kind === 'hls') parts.push('HLS · with audio');
   }
 
   if (stream.sizeBytes) parts.push(formatBytes(stream.sizeBytes));
@@ -119,6 +120,8 @@ export async function assembleResolvedMedia(params: {
         : stream.kind === 'video'
           ? ` (${stream.height ?? 0}p video)`
           : '';
+    // An HLS variant is assembled into MP4 in the browser, so name it that way.
+    const container = stream.kind === 'hls' ? 'mp4' : stream.container;
 
     const token = await signStreamToken(
       {
@@ -128,7 +131,7 @@ export async function assembleResolvedMedia(params: {
         p: platform,
         ...(stream.headers?.['Referer'] ? { r: stream.headers['Referer'] } : {}),
         ...(stream.headers?.['User-Agent'] ? { ua: stream.headers['User-Agent'] } : {}),
-        f: safeFilename(title, suffix, stream.container),
+        f: safeFilename(title, suffix, container),
       },
       signingKey,
     );
@@ -156,7 +159,10 @@ export async function assembleResolvedMedia(params: {
   // Sort each family best-first so the UI can render the list as-is.
   const videos = result.streams.filter((s) => s.kind === 'video').sort((a, b) => videoScore(b) - videoScore(a));
   const audios = result.streams.filter((s) => s.kind === 'audio').sort((a, b) => audioScore(b) - audioScore(a));
-  const muxed = result.streams.filter((s) => s.kind === 'muxed').sort((a, b) => videoScore(b) - videoScore(a));
+  // HLS variants are self-contained, so they rank alongside progressive files.
+  const muxed = result.streams
+    .filter((s) => s.kind === 'muxed' || s.kind === 'hls')
+    .sort((a, b) => videoScore(b) - videoScore(a));
 
   const ordered = [...muxed, ...videos, ...audios];
   const variants = await Promise.all(ordered.map(sign));

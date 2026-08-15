@@ -437,6 +437,78 @@ export async function muxTracks(request: MuxRequest): Promise<MuxResult> {
   }
 }
 
+/**
+ * Turns a concatenated HLS segment stream into a seekable MP4.
+ *
+ * Joined segments are already a valid elementary stream that players can decode
+ * front-to-back, but they carry no index, so seeking and duration are broken.
+ * One `-c copy` pass rebuilds the container: no re-encode, no quality change.
+ *
+ * Dailymotion interleaves audio into every variant, so there is nothing to
+ * combine here — this is remuxing, not muxing.
+ */
+export async function remuxToMp4(request: {
+  data: Uint8Array;
+  /** 'mp4' for fMP4 segments (an EXT-X-MAP was present), else 'ts'. */
+  sourceContainer: 'ts' | 'mp4';
+  filename: string;
+  onProgress: (progress: MuxProgress) => void;
+}): Promise<MuxResult> {
+  if (!isMuxSupported()) {
+    throw new MuxError('This browser cannot process the file (WebAssembly unavailable).');
+  }
+
+  const ffmpeg = await getFFmpeg(request.onProgress);
+  const input = `in_hls.${request.sourceContainer}`;
+  const output = 'out.mp4';
+
+  try {
+    await ffmpeg.writeFile(input, request.data);
+
+    request.onProgress({ phase: 'mux', ratio: 0, message: 'Building the final file…' });
+    const onFFmpegProgress = ({ progress }: { progress: number }) =>
+      request.onProgress({
+        phase: 'mux',
+        ratio: Math.max(0, Math.min(1, progress)),
+        message: 'Building the final file…',
+      });
+    ffmpeg.on('progress', onFFmpegProgress);
+
+    let exitCode: number;
+    try {
+      exitCode = await ffmpeg.exec([
+        '-i', input,
+        '-c', 'copy',
+        // Segment streams often start at a non-zero timestamp; without this the
+        // output reports a bogus duration and seeks land in the wrong place.
+        '-avoid_negative_ts', 'make_zero',
+        '-fflags', '+genpts',
+        '-movflags', '+faststart',
+        output,
+      ]);
+    } finally {
+      ffmpeg.off('progress', onFFmpegProgress);
+    }
+
+    if (exitCode !== 0) {
+      throw new MuxError(`Could not rebuild the file (ffmpeg exit ${exitCode}).`);
+    }
+
+    request.onProgress({ phase: 'finalize', ratio: 1, message: 'Preparing your file…' });
+    const data = await ffmpeg.readFile(output);
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+    if (bytes.byteLength === 0) throw new MuxError('The output file was empty.');
+
+    return {
+      blob: new Blob([bytes as BlobPart], { type: 'video/mp4' }),
+      filename: `${request.filename}.mp4`,
+      container: 'mp4',
+    };
+  } finally {
+    await Promise.allSettled([ffmpeg.deleteFile(input), ffmpeg.deleteFile(output)]);
+  }
+}
+
 function mimeFor(container: OutputContainer): string {
   switch (container) {
     case 'mp4':
