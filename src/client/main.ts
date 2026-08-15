@@ -565,7 +565,8 @@ async function handleHlsDownload(variant: StreamVariant): Promise<void> {
 
     announce('Downloading segments…');
     const data = await downloadHlsVariant(
-      variant.proxyUrl,
+      // Direct first: the visitor's residential IP is not what the CDN blocks.
+      { ...(variant.directUrl ? { direct: variant.directUrl } : {}), proxy: variant.proxyUrl },
       ({ completed, total, bytes }) =>
         renderProgress({
           phase: 'download',

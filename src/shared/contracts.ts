@@ -54,6 +54,20 @@ export const streamVariantSchema = z.object({
    * upstream credentials into client-side history.
    */
   proxyUrl: z.string().min(1),
+
+  /**
+   * The REAL upstream URL, deliberately exposed.
+   *
+   * Only set where fetching straight from the CDN is better than proxying —
+   * currently Dailymotion, whose WAF blocks datacenter IPs but not the visitor's
+   * own residential connection. The browser tries this first and falls back to
+   * proxyUrl if CORS refuses it.
+   *
+   * These URLs are already public, short-lived and unauthenticated, so exposing
+   * them leaks nothing: it simply moves the fetch to the machine that is allowed
+   * to make it.
+   */
+  directUrl: z.string().optional(),
 });
 export type StreamVariant = z.infer<typeof streamVariantSchema>;
 

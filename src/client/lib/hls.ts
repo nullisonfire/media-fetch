@@ -5,10 +5,17 @@
  * An HLS variant is not a file — it is a playlist naming hundreds of segments.
  * To save it, the browser must fetch every segment and join them in order.
  *
- * The Worker has already rewritten the playlist so every URI is a signed
- * same-origin proxy URL, which means two problems are already solved before this
- * code runs: the segment CDNs send no CORS headers (so a direct fetch could
- * never read the bytes), and no upstream URL is exposed to the page.
+ * TWO ROUTES, tried in order:
+ *
+ *  1. DIRECT from the CDN. Preferred for Dailymotion, because what its WAF blocks
+ *     is datacenter IPs — not the visitor's residential connection. Fetching from
+ *     the browser sidesteps the block entirely, and measurements showed the
+ *     server-side route is a coin flip (4/6, later 0/8, from the same host).
+ *  2. THROUGH THE PROXY. The Worker rewrites every URI into a signed same-origin
+ *     link, so this works wherever CORS refuses a direct read — at the cost of
+ *     going through the IP the CDN may be blocking.
+ *
+ * Whichever answers first wins, per request, with no configuration.
  *
  * Dailymotion's variants interleave audio and video, so unlike the adaptive
  * YouTube/Bilibili path there is nothing to mux — the joined bytes are already a
@@ -84,8 +91,41 @@ function parsePlaylist(body: string): ParsedPlaylist {
   return { ...(initSegment ? { initSegment } : {}), segments, variants, encrypted };
 }
 
-async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(url, { signal, credentials: 'same-origin' });
+/**
+ * A URL pair: the real CDN address, and our proxy as a fallback.
+ *
+ * Direct is preferred for Dailymotion because the visitor's residential IP is
+ * not what the CDN blocks — the Worker's datacenter IP is. Fetching from the
+ * browser sidesteps the WAF entirely. It can still fail (the CDN may not send
+ * CORS headers for a third-party origin), so the proxy stays as the backstop.
+ */
+export interface SourceUrls {
+  direct?: string;
+  proxy: string;
+}
+
+/**
+ * Fetches from `direct` when present, falling back to `proxy`.
+ *
+ * A CORS refusal surfaces as a thrown TypeError with no status — indistinguishable
+ * from a network drop — so ANY direct failure falls through rather than trying to
+ * classify it.
+ */
+async function fetchWithFallback(
+  urls: SourceUrls,
+  signal?: AbortSignal,
+): Promise<{ response: Response; usedDirect: boolean; base: string }> {
+  if (urls.direct) {
+    try {
+      const response = await fetch(urls.direct, { signal, mode: 'cors' });
+      if (response.ok) return { response, usedDirect: true, base: urls.direct };
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      /* CORS or network — fall through to the proxy */
+    }
+  }
+
+  const response = await fetch(urls.proxy, { signal, credentials: 'same-origin' });
   if (!response.ok) {
     throw new HlsError(
       response.status === 410
@@ -93,7 +133,7 @@ async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
         : `Could not load the playlist (HTTP ${response.status}).`,
     );
   }
-  return response.text();
+  return { response, usedDirect: false, base: urls.proxy };
 }
 
 /**
@@ -104,7 +144,7 @@ async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
  * `remuxToMp4` in the muxer to finish the job.
  */
 export async function downloadHlsVariant(
-  playlistUrl: string,
+  urls: SourceUrls,
   onProgress: (progress: HlsProgress) => void,
   signal?: AbortSignal,
   depth = 0,
@@ -113,13 +153,27 @@ export async function downloadHlsVariant(
     throw new HlsError('The playlist nests too deeply to follow.');
   }
 
-  const playlist = parsePlaylist(await fetchText(playlistUrl, signal));
+  const { response, usedDirect, base } = await fetchWithFallback(urls, signal);
+  const playlist = parsePlaylist(await response.text());
+
+  /**
+   * How child URLs are resolved depends on which route worked.
+   *
+   * Direct: the playlist is untouched, so its URIs are relative to the CDN — and
+   * children must ALSO be fetched directly, since the proxy might be blocked.
+   * Proxy: the Worker already rewrote every URI into an absolute same-origin
+   * link, so they are used as-is.
+   */
+  const childUrls = (uri: string): SourceUrls =>
+    usedDirect
+      ? { direct: new URL(uri, base).toString(), proxy: new URL(uri, base).toString() }
+      : { proxy: new URL(uri, base).toString() };
 
   // A master playlist slipped through: follow its best (first) variant, which
   // the Worker already sorted highest-quality-first.
   if (playlist.variants.length > 0 && playlist.segments.length === 0) {
-    const first = playlist.variants[0]!;
-    return downloadHlsVariant(first, onProgress, signal, depth + 1);
+    // A master playlist. Follow the highest-bandwidth variant.
+    return downloadHlsVariant(childUrls(playlist.variants[0]!), onProgress, signal, depth + 1);
   }
 
   if (playlist.encrypted) {
@@ -137,11 +191,11 @@ export async function downloadHlsVariant(
 
   // The init segment must be byte zero of the output; everything else follows in
   // playlist order, so results are indexed rather than pushed as they land.
-  const urls = playlist.initSegment
+  const segmentUris = playlist.initSegment
     ? [playlist.initSegment, ...playlist.segments]
     : playlist.segments;
 
-  const chunks = new Array<Uint8Array | undefined>(urls.length);
+  const chunks = new Array<Uint8Array | undefined>(segmentUris.length);
   let completed = 0;
   let bytes = 0;
   let cursor = 0;
@@ -150,23 +204,23 @@ export async function downloadHlsVariant(
     for (;;) {
       const index = cursor;
       cursor += 1;
-      if (index >= urls.length) return;
+      if (index >= segmentUris.length) return;
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-      const response = await fetch(urls[index]!, { signal, credentials: 'same-origin' });
-      if (!response.ok) {
-        throw new HlsError(`Segment ${index + 1} of ${urls.length} failed (HTTP ${response.status}).`);
-      }
-      const buffer = new Uint8Array(await response.arrayBuffer());
+      const { response: segment } = await fetchWithFallback(
+        childUrls(segmentUris[index]!),
+        signal,
+      );
+      const buffer = new Uint8Array(await segment.arrayBuffer());
       chunks[index] = buffer;
 
       completed += 1;
       bytes += buffer.byteLength;
-      onProgress({ completed, total: urls.length, bytes });
+      onProgress({ completed, total: segmentUris.length, bytes });
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, urls.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, segmentUris.length) }, worker));
 
   // Single allocation, then one pass — concatenating incrementally would copy
   // the whole buffer on every segment.

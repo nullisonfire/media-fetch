@@ -153,6 +153,7 @@ export async function assembleResolvedMedia(params: {
       // Relative URL: keeps the payload small and avoids hardcoding the origin
       // into cached responses. `origin` is still accepted for absolute needs.
       proxyUrl: `${origin}/api/stream?t=${encodeURIComponent(token)}`,
+      ...(stream.directUrl ? { directUrl: stream.directUrl } : {}),
     };
   };
 

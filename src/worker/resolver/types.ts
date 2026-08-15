@@ -26,6 +26,13 @@ export interface RawStream {
    * signed token so the proxy can replay them; never exposed to the browser.
    */
   headers?: Record<string, string>;
+
+  /**
+   * Set when the browser should fetch this URL DIRECTLY rather than through the
+   * proxy — see StreamVariant.directUrl. Used where the visitor's residential IP
+   * succeeds and a datacenter IP does not.
+   */
+  directUrl?: string;
 }
 
 export interface ResolverResult {

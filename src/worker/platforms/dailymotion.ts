@@ -1,5 +1,4 @@
 import { AppError } from '../lib/http';
-import { parseMasterPlaylist } from '../lib/hls';
 import type { RawStream, ResolverResult } from '../resolver/types';
 import { defineProvider, hostMatches, stripTracking } from './types';
 
@@ -129,45 +128,42 @@ export const dailymotion = defineProvider({
       throw AppError.upstream('Dailymotion returned no playable manifest for that video.');
     }
 
-    /* ---- 2. the master playlist, to enumerate qualities ---- */
-    const masterRes = await ctx.fetch(master, {
-      headers: DM_HEADERS,
-      signal: AbortSignal.timeout(12_000),
-    });
-
-    if (!masterRes.ok) {
-      // The single most likely failure, and the one worth naming precisely.
-      throw new AppError(
-        'upstream_blocked',
-        `Dailymotion's CDN refused this server (HTTP ${masterRes.status}). Its WAF blocks ` +
-          'datacenter IPs, and no combination of headers or cookies changes that. ' +
-          'Dailymotion needs a resolver on a residential connection.',
-        503,
-      );
-    }
-
-    const body = await masterRes.text();
-    const variants = parseMasterPlaylist(body, master);
-    if (variants.length === 0) {
-      throw AppError.upstream('Dailymotion returned a manifest with no variants.');
-    }
+    // stream_formats is a map of quality -> container, e.g. {"1080":"fMP4"}. It
+    // is the only quality hint available without reading the manifest.
+    const highestQuality = Object.keys(meta.stream_formats ?? {})
+      .map(Number)
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => b - a)[0];
 
     /**
-     * Each variant is a complete programme, not a video-only track: Dailymotion
-     * interleaves audio into every rendition. That is why these are emitted as
-     * `hls` rather than `video` — the browser assembles segments, and there is
-     * nothing to mux against.
+     * The Worker deliberately does NOT fetch the manifest.
+     *
+     * `cdndirector.dailymotion.com` sits behind a Cloudflare WAF that refuses
+     * datacenter IPs — measured as fully blocked from Node and curl, and
+     * intermittent even from workerd (4/6, then 0/8 once the IP had been used a
+     * while). Any server-side fetch of it is therefore a coin flip.
+     *
+     * The visitor's browser has none of that problem: it is on a residential
+     * connection, which is exactly the traffic Dailymotion serves all day. So the
+     * raw manifest URL is handed to the client and the browser does the work.
+     *
+     * Consequence: qualities are not enumerated here — the client reads them from
+     * the master playlist and picks the best. One variant is returned, labelled
+     * accordingly, rather than a list we cannot see.
      */
-    const streams: RawStream[] = variants.map((variant) => ({
-      url: variant.url,
-      kind: 'hls' as const,
-      container: 'mp4',
-      codec: variant.codecs?.split(',')[0]?.trim().split('.')[0] ?? 'avc1',
-      ...(variant.width ? { width: variant.width } : {}),
-      ...(variant.height ? { height: variant.height } : {}),
-      ...(variant.bandwidth ? { bitrateKbps: Math.round(variant.bandwidth / 1000) } : {}),
-      headers: { Referer: 'https://www.dailymotion.com/' },
-    }));
+    const streams: RawStream[] = [
+      {
+        url: master,
+        kind: 'hls',
+        container: 'mp4',
+        codec: 'avc1',
+        // The browser fetches this directly; proxyUrl remains as the fallback
+        // for the case where CORS refuses the direct read.
+        directUrl: master,
+        headers: { Referer: 'https://www.dailymotion.com/' },
+        ...(highestQuality ? { height: highestQuality } : {}),
+      },
+    ];
 
     const thumbnails = meta.thumbnails ?? {};
     const widest = Object.keys(thumbnails)

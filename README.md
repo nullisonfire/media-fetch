@@ -33,21 +33,34 @@ Because we only ever **stream copy** (`-c copy`) — rewriting container headers
 | **Instagram** | ✅ yes | Logged-out Polaris GraphQL. Needs `Sec-Fetch-Site: same-origin`, which **only a Worker can send** |
 | **Facebook** | ✅ yes | `/plugins/video.php` returns `hd_src`/`sd_src` with no cookies |
 | **YouTube** | ⚠️ needs residential egress | InnerTube ANDROID_VR needs no JS and no PO token, but datacenter IPs get "confirm you're not a bot" |
-| **Dailymotion** | ✅ yes | `geo.dailymotion.com` metadata + HLS. Segments are fetched and joined in the browser |
+| **Dailymotion** | ✅ yes | `geo.dailymotion.com` metadata only. The **browser** fetches the HLS manifest and segments direct from the CDN |
 
 **Measured, not assumed.** Bilibili returns 6 video + 3 audio DASH reps and serves HTTP 206 bytes. Dailymotion resolves 3/3 test videos up to 1080p. YouTube's InnerTube ANDROID_VR client returns 27 formats, all with direct URLs and **zero** requiring JS signature descrambling — but only 1 of 9 test videos passed the bot check.
 
-### The workerd fingerprint surprise
+### Dailymotion: let the browser do it
 
-`cdndirector.dailymotion.com` refuses Node and curl with a bare `403` (empty body,
-`server: cloudflare` — a WAF block), from the same host and the same IP where the
-Worker succeeds. Ruled out by direct test: it is not the headers (a byte-exact copy
-of a real Chrome request is still refused) and not cookies (a bootstrapped guest jar
-changes nothing).
+`cdndirector.dailymotion.com` is behind a Cloudflare WAF that refuses datacenter
+IPs. Measured, in order:
 
-**workerd's own TLS/HTTP2 fingerprint is what gets through.** The practical lesson:
-never conclude a host is blocked based on curl or Node — measure from inside a
-Worker, which is what `scripts/edge-probe.js` is for.
+| Client | Result |
+|---|---|
+| curl / Node, byte-exact Chrome headers | 403, every time |
+| same, with a bootstrapped guest cookie jar | 403 |
+| **workerd** (same host, same IP) | 200 — then 4/6 — then **0/8** |
+
+So it is not headers and not cookies: a different TLS fingerprint gets further,
+and even that decays as an IP accumulates requests. Any server-side fetch of the
+manifest is a coin flip.
+
+**The visitor's browser has none of this problem** — a residential connection is
+exactly the traffic Dailymotion serves all day. So the Worker fetches only the
+metadata (which is never blocked) and hands the browser the **real manifest URL**.
+The browser reads the playlist and pulls the segments itself.
+
+There is nothing to hide: those URLs are public, short-lived and unauthenticated.
+Exposing them simply moves the fetch to the machine that is allowed to make it.
+The signed proxy remains as an automatic fallback for the case where the CDN
+refuses a cross-origin read.
 
 So a Cloudflare-only deployment covers **Bilibili, Facebook, Instagram and
 Dailymotion**. Only YouTube needs a resolver on a residential IP.
