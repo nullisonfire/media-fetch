@@ -75,7 +75,32 @@ streamRoute.on(['GET', 'HEAD'], '/', async (c) => {
     );
   }
 
-  const { u: upstreamUrl, k: kind, r: referer, f: filename, ua } = verified.payload;
+  const { k: kind, r: referer, f: filename, ua } = verified.payload;
+
+  /**
+   * A child of a directly-fetched playlist may be requested with `?u=<child>`
+   * alongside the parent's token. Minting a token per segment in the browser is
+   * impossible (it has no signing key), so the parent token authorises its
+   * children — but ONLY on the same host, so a valid token for one CDN can never
+   * be used to fetch from another.
+   */
+  const requestedChild = c.req.query('u');
+  let upstreamUrl = verified.payload.u;
+  if (requestedChild) {
+    let childHost: string;
+    let parentHost: string;
+    try {
+      childHost = new URL(requestedChild).hostname;
+      parentHost = new URL(verified.payload.u).hostname;
+    } catch {
+      throw AppError.invalidRequest('Malformed child URL.');
+    }
+    // Exact host match: a suffix check would let evil-cdndirector.example through.
+    if (childHost !== parentHost) {
+      throw AppError.invalidRequest('That child URL does not belong to the signed playlist.');
+    }
+    upstreamUrl = requestedChild;
+  }
 
   const upstreamHeaders = new Headers({
     // A UA from the signed payload wins: Google's video CDN rejects requests
@@ -92,15 +117,47 @@ streamRoute.on(['GET', 'HEAD'], '/', async (c) => {
     if (value) upstreamHeaders.set(name, value);
   }
 
-  const upstream = await safeFetch(upstreamUrl, {
-    method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
-    headers: upstreamHeaders,
-  });
+  /**
+   * Dailymotion's WAF refuses datacenter IPs non-deterministically — measured at
+   * 4/6 then 0/8 from one host within an hour. A single attempt therefore fails
+   * downloads that a retry would have completed, so playlist fetches (small, and
+   * the gateway to everything else) get a few quick attempts before giving up.
+   * Media bytes are not retried here: they are large, and the client's own
+   * fallback handles them.
+   */
+  const attempts = kind === 'hls' ? 4 : 1;
+  let upstream!: Response;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    upstream = await safeFetch(upstreamUrl, {
+      method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
+      headers: upstreamHeaders,
+    });
+    if (upstream.ok || upstream.status === 206 || attempt === attempts) break;
+    await upstream.body?.cancel();
+    // Short, escalating pause: the WAF decision varies per request, not per second.
+    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+  }
 
   if (!upstream.ok && upstream.status !== 206) {
     await upstream.body?.cancel();
     if (upstream.status === 403 || upstream.status === 401) {
-      // Almost always an expired upstream signature rather than a real denial.
+      /**
+       * A 403 has two very different causes and they must not share a message.
+       *
+       * On a playlist it is almost always the CDN's WAF refusing this server's
+       * IP — reporting "your link expired" there sends the user to re-resolve,
+       * which cannot possibly help. On media bytes it usually IS an expired
+       * upstream signature, where re-resolving is exactly the fix.
+       */
+      if (kind === 'hls') {
+        throw new AppError(
+          'upstream_blocked',
+          "The platform's CDN refused this server. Its firewall blocks datacenter IPs " +
+            'intermittently, so retrying often works; a resolver on a residential ' +
+            'connection fixes it permanently.',
+          503,
+        );
+      }
       throw new AppError(
         'token_expired',
         'The platform link has expired. Resolve it again to refresh.',

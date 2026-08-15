@@ -137,6 +137,21 @@ async function fetchWithFallback(
 }
 
 /**
+ * Builds a Worker-proxy URL for a child of a directly-fetched playlist.
+ *
+ * The parent's proxy URL carries a signed token for the PARENT resource, so it
+ * cannot be reused for a child. `/api/stream` accepts a `u` parameter alongside
+ * the parent token: the Worker verifies the token, checks the child shares the
+ * parent's host, and only then fetches it. That keeps the endpoint closed
+ * without minting a token per segment in the browser.
+ */
+function proxyFallbackFor(childUrl: string, parentProxyUrl: string): string {
+  const url = new URL(parentProxyUrl, location.href);
+  url.searchParams.set('u', childUrl);
+  return url.toString();
+}
+
+/**
  * Downloads an HLS variant and returns the concatenated segment bytes.
  *
  * The result is a raw segment stream (MPEG-TS, or fMP4 when an init segment was
@@ -157,17 +172,20 @@ export async function downloadHlsVariant(
   const playlist = parsePlaylist(await response.text());
 
   /**
-   * How child URLs are resolved depends on which route worked.
+   * How child URIs resolve depends on which route answered.
    *
-   * Direct: the playlist is untouched, so its URIs are relative to the CDN — and
-   * children must ALSO be fetched directly, since the proxy might be blocked.
-   * Proxy: the Worker already rewrote every URI into an absolute same-origin
-   * link, so they are used as-is.
+   * Proxy route: the Worker already rewrote every URI into an absolute
+   *   same-origin link, so it is used verbatim.
+   * Direct route: URIs are relative to the CDN. They are tried directly first,
+   *   but they MUST keep a genuine proxy fallback — an earlier version pointed
+   *   `proxy` back at the same CDN URL, which meant a failing segment simply
+   *   retried the identical request and the fallback did nothing.
    */
-  const childUrls = (uri: string): SourceUrls =>
-    usedDirect
-      ? { direct: new URL(uri, base).toString(), proxy: new URL(uri, base).toString() }
-      : { proxy: new URL(uri, base).toString() };
+  const childUrls = (uri: string): SourceUrls => {
+    if (!usedDirect) return { proxy: new URL(uri, base).toString() };
+    const absolute = new URL(uri, base).toString();
+    return { direct: absolute, proxy: proxyFallbackFor(absolute, urls.proxy) };
+  };
 
   // A master playlist slipped through: follow its best (first) variant, which
   // the Worker already sorted highest-quality-first.

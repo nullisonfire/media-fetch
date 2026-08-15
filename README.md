@@ -33,7 +33,7 @@ Because we only ever **stream copy** (`-c copy`) — rewriting container headers
 | **Instagram** | ✅ yes | Logged-out Polaris GraphQL. Needs `Sec-Fetch-Site: same-origin`, which **only a Worker can send** |
 | **Facebook** | ✅ yes | `/plugins/video.php` returns `hd_src`/`sd_src` with no cookies |
 | **YouTube** | ⚠️ needs residential egress | InnerTube ANDROID_VR needs no JS and no PO token, but datacenter IPs get "confirm you're not a bot" |
-| **Dailymotion** | ✅ yes | `geo.dailymotion.com` metadata only. The **browser** fetches the HLS manifest and segments direct from the CDN |
+| **Dailymotion** | ⚠️ unreliable | Metadata always works; the HLS manifest is behind a WAF that refuses datacenter IPs intermittently (~3/5 with retries) |
 
 **Measured, not assumed.** Bilibili returns 6 video + 3 audio DASH reps and serves HTTP 206 bytes. Dailymotion resolves 3/3 test videos up to 1080p. YouTube's InnerTube ANDROID_VR client returns 27 formats, all with direct URLs and **zero** requiring JS signature descrambling — but only 1 of 9 test videos passed the bot check.
 
@@ -52,18 +52,29 @@ So it is not headers and not cookies: a different TLS fingerprint gets further,
 and even that decays as an IP accumulates requests. Any server-side fetch of the
 manifest is a coin flip.
 
-**The visitor's browser has none of this problem** — a residential connection is
-exactly the traffic Dailymotion serves all day. So the Worker fetches only the
-metadata (which is never blocked) and hands the browser the **real manifest URL**.
-The browser reads the playlist and pulls the segments itself.
+**Could the browser fetch it instead?** That was the obvious escape — the visitor's
+residential IP is not what the CDN blocks. It does not work, and the response
+headers say exactly why:
 
-There is nothing to hide: those URLs are public, short-lived and unauthenticated.
-Exposing them simply moves the fetch to the machine that is allowed to make it.
-The signed proxy remains as an automatic fallback for the case where the CDN
-refuses a cross-origin read.
+```
+access-control-allow-headers: X-Request-Origin     present
+timing-allow-origin: *                             present
+access-control-allow-origin:                       ABSENT
+```
 
-So a Cloudflare-only deployment covers **Bilibili, Facebook, Instagram and
-Dailymotion**. Only YouTube needs a resolver on a residential IP.
+Without `Access-Control-Allow-Origin` the browser will never let JavaScript read
+that response. Opening the same URL in a browser tab DOES work, because a
+top-level navigation is not CORS-checked — which makes it look like the browser
+can fetch it when `fetch()` cannot.
+
+The code still exposes `directUrl` and tries it first: it costs one failed request,
+and it starts working for free the day Dailymotion adds a CORS header. But the
+working path today is the proxy, and that path is a coin flip.
+
+**Practical position:** Dailymotion succeeds roughly 3 times in 5 with retries.
+If that is not good enough, point `RESOLVER_BASE_URL` at a resolver on a
+residential connection — the same fix YouTube needs. Bilibili, Facebook and
+Instagram are unaffected and need nothing.
 
 ---
 
