@@ -72,7 +72,7 @@ enabled = true
 # Facebook and Instagram are extracted natively by the Worker and never touch it.
 # See resolver-server/ and the README section "YouTube cookies".
 #
-# [vars]
+[vars]
 RESOLVER_BASE_URL = "https://sectester.xyz/media-fetch_resolver"
 RESOLVER_BACKEND = "ytdlp"          # or "cobalt"
 
