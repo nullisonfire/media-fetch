@@ -131,7 +131,8 @@ src/
         ├── download.ts  streaming save to disk, with fallbacks
         ├── api.ts       typed client, responses validated against contracts
         └── format.ts    display formatters
-resolver-server/       reference yt-dlp service (FastAPI + Dockerfile)
+resolver-server/       reference yt-dlp service (FastAPI + Dockerfile) — VPS / Pi
+resolver-cpanel/       same contract as plain WSGI — cPanel "Setup Python App"
 ```
 
 ---

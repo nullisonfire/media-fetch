@@ -1,0 +1,11 @@
+# The ONLY dependency. No web framework: the app is plain WSGI, which is what
+# Passenger speaks natively, and every avoided dependency is one less thing that
+# can fail to build on shared hosting.
+#
+# Pin loosely and update often — YouTube extraction breaks when yt-dlp goes stale.
+yt-dlp>=2024.12.13
+
+# Mozilla's CA bundle. Shared hosting often ships a Python whose trust store is
+# missing or stale, which makes every HTTPS request fail with
+# CERTIFICATE_VERIFY_FAILED — a failure that looks exactly like being blocked.
+certifi>=2024.7.4
