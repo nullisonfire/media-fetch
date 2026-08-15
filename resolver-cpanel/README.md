@@ -66,13 +66,17 @@ Add these in the app's **Environment variables** section:
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `RESOLVER_TOKEN` | **yes** | Bearer token. Must match the Worker's `RESOLVER_TOKEN` secret. Generate: `openssl rand -hex 32` |
+| `RESOLVER_TOKEN` | **yes** | Bearer token. Must match the Worker's `RESOLVER_TOKEN` secret. Generate: `openssl rand -hex 32`. **Without it `/extract` returns 503** — the app fails closed rather than serving the internet |
 | `MAX_CONCURRENT` | no | Default 2. Keep low — shared hosts suspend accounts for resource spikes |
 | `EXTRACT_TIMEOUT` | no | Default 45 seconds |
 | `YTDLP_COOKIE_FILE` | no | Absolute path to a cookies.txt. See the main README's "YouTube cookies" section, including the account-ban warning |
 | `INSECURE_TLS` | no | **Last resort only.** Disables certificate verification |
 
-Without `RESOLVER_TOKEN` the endpoint is **open to the internet**. Always set it.
+`/extract` refuses to run until `RESOLVER_TOKEN` is set, and `/health` says so in
+an `authWarning` field. That is deliberate: an unauthenticated extraction endpoint
+on shared hosting is a standing invitation to burn your CPU allowance, and the
+usual outcome is the whole cPanel account being suspended. For a private machine
+where you genuinely want it open, set `ALLOW_NO_AUTH=1`.
 
 ### 5. Restart, then check health
 

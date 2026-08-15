@@ -186,10 +186,25 @@ def _json_response(
     return [body]
 
 
+#: Refusing to run without a token is deliberate. An unauthenticated extraction
+#: endpoint on shared hosting is a standing invitation: anyone who finds the URL
+#: can burn your CPU allowance and upstream reputation, and the usual outcome is
+#: the whole cPanel account getting suspended. Fail closed, not open.
+ALLOW_NO_AUTH = os.environ.get("ALLOW_NO_AUTH") == "1"
+
+
 def _require_token(environ: dict[str, Any]) -> None:
-    """Bearer auth. No token configured means auth is OFF — never do that publicly."""
+    """Bearer auth, mandatory unless explicitly waived for local testing."""
     if not TOKEN:
-        return
+        if ALLOW_NO_AUTH:
+            return
+        raise HttpError(
+            503,
+            "RESOLVER_TOKEN is not set, so this endpoint refuses to run. Set it in "
+            "the cPanel Python App environment variables (generate with "
+            "`openssl rand -hex 32`) and restart the app. To run without auth on a "
+            "private machine, set ALLOW_NO_AUTH=1.",
+        )
 
     header = environ.get("HTTP_AUTHORIZATION", "")
     scheme, _, value = header.partition(" ")
@@ -404,6 +419,12 @@ def handle_health() -> dict[str, Any]:
         else "enabled",
         "ytdlpImportError": YTDLP_IMPORT_ERROR,
         "auth": bool(TOKEN),
+        "authWarning": None
+        if TOKEN
+        else (
+            "OPEN ENDPOINT — /extract is disabled until RESOLVER_TOKEN is set "
+            "(or ALLOW_NO_AUTH=1 for a private machine)"
+        ),
         "cookies": "cookiefile" in YDL_OPTIONS,
         "maxConcurrent": MAX_CONCURRENT,
         "egressIp": egress,
